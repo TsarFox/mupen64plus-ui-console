@@ -27,6 +27,7 @@
 #include "debugger.h"
 
 #include <SDL.h>
+#include <Python.h>
 
 /*
  * Variables
@@ -34,18 +35,18 @@
 
 // General Purpose Register names
 const char *register_names[] = {
-    "$r0",
-    "$at",
+    "r0",
+    "at",
     "v0", "v1",
     "a0", "a1", "a2", "a3",
     "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
     "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
     "t8", "t9",
     "k0", "k1",
-    "$gp",
-    "$sp",
+    "gp",
+    "sp",
     "sB",
-    "$ra"
+    "ra"
 };
 
 // Holds the previous GPR values for comparison details.
@@ -147,7 +148,7 @@ int debugger_print_registers() {
         if (val_changed)
             printf("%c[1m", 27); // Bold on
 
-        // Print the register value, no padding if it is all zeroes. 
+        // Print the register value, no padding if it is all zeroes.
         printf(regs[i] == 0 ? format_nopad : format_padded,
                register_names[i], regs[i]);
 
@@ -174,10 +175,156 @@ char *debugger_decode_op(unsigned int instruction, int instruction_addr,
     return output;
 }
 
+static PyObject* _run(PyObject *self, PyObject *args) {
+    cur_run_state = 2;
+    if (debugger_set_run_state(cur_run_state)) {
+        PyErr_SetString(PyExc_RuntimeError, "Error setting run_state: run");
+        return NULL;
+    } else {
+        debugger_step(); // Hack to kick-start the emulation.
+    }
+
+    return Py_None;
+}
+
+static PyObject* _pause(PyObject *self, PyObject *args) {
+    cur_run_state = 0;
+    if (debugger_set_run_state(cur_run_state)) {
+        PyErr_SetString(PyExc_RuntimeError, "Error setting run_state: pause");
+        return NULL;
+    }
+
+    return Py_None;
+}
+
+static PyObject* _step(PyObject *self, PyObject *args) {
+    if(!PyArg_ParseTuple(args, "i", &debugger_steps_pending)) {
+        return NULL;
+    }
+
+    if (cur_run_state == 2) {
+        PyErr_SetString(PyExc_RuntimeError, "Cannot step while running");
+        return NULL;
+    }
+
+    debugger_loop_wait = 1;
+
+    if (debugger_steps_pending < 1) {
+        debugger_steps_pending = 1;
+    }
+
+    --debugger_steps_pending;
+    debugger_step();
+
+    return Py_None;
+}
+
+static PyObject *_get_reg(PyObject *self, PyObject *args) {
+    int i;
+    unsigned long long int *regs;
+    char *arg;
+
+    if (!PyArg_ParseTuple(args, "s", &arg)) {
+        return NULL;
+    }
+
+    if (!strcmp(arg, "pc")) {
+        return PyLong_FromUnsignedLong((unsigned long) cur_pc);
+    }
+
+    regs = (unsigned long long int *) (*DebugGetCPUDataPtr)(M64P_CPU_REG_REG);
+
+    if (regs == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "Could not get registers");
+        return NULL;
+    }
+
+    for (i = 0; i < 32; i++) {
+        if (!strcmp(arg, register_names[i])) {
+            return PyLong_FromLongLong(regs[i]);
+        }
+    }
+
+    return Py_None;
+}
+
+static PyObject *_read_word(PyObject *self, PyObject *args) {
+    unsigned long addr;
+
+    if (!PyArg_ParseTuple(args, "k", &addr)) {
+        return NULL;
+    }
+
+    return PyLong_FromLong((*DebugMemRead32)(addr));
+}
+
+static PyObject *_disas_word(PyObject *self, PyObject *args) {
+    PyObject *opcode, *opargs;
+    unsigned instruction;
+    unsigned long addr;
+    char output[0x100];
+
+    if (!PyArg_ParseTuple(args, "Ik", &instruction, &addr)) {
+        return NULL;
+    }
+
+    (*DebugDecodeOp)(instruction, output, output + 10, addr);
+    opcode = PyUnicode_FromString(output);
+    opargs = PyUnicode_FromString(output + 10);
+
+    return PyTuple_Pack(2, opcode, opargs);
+}
+
+static PyMethodDef LLM64PMethods[] = {
+    {"run", _run, METH_VARARGS, "Continue execution."},
+    {"pause", _pause, METH_VARARGS, "Pause execution."},
+    {"step", _step, METH_VARARGS, "Undocumented."},
+    {"get_reg", _get_reg, METH_VARARGS, "Undocumented."},
+    {"read_word", _read_word, METH_VARARGS, "Undocumented."},
+    {"disas_word", _disas_word, METH_VARARGS, "Undocumented."},
+    {NULL, NULL, 0, NULL}
+};
+
+static PyModuleDef LLM64PModule = {
+    PyModuleDef_HEAD_INIT, "llm64p", NULL, -1, LLM64PMethods,
+    NULL, NULL, NULL, NULL
+};
+
+
+static PyObject *PyInit_llm64p(void) {
+    return PyModule_Create(&LLM64PModule);
+}
+
 /*
  * Debugger main loop
  */
 int debugger_loop(void *arg) {
+    FILE *fp;
+
+    while (debugger_loop_wait) {
+        SDL_Delay(1);
+    }
+
+    printf("Hooked!\n");
+
+    PyImport_AppendInittab("llm64p", &PyInit_llm64p);
+    Py_Initialize();
+
+    if ((fp = fopen("test.py", "r")) == NULL) {
+        goto out;
+    }
+
+    PyRun_SimpleFile(fp, "test.py");
+    fclose(fp);
+
+    SDL_Delay(5000);
+
+ out:
+    Py_FinalizeEx();
+    (*CoreDoCommand)(M64CMD_STOP, 0, NULL);
+    return -1;
+
+#if 0
     char input[256];
     while (1) {
         if (debugger_loop_wait) {
@@ -409,5 +556,5 @@ int debugger_loop(void *arg) {
     }
 
     return -1;
+#endif
 }
-

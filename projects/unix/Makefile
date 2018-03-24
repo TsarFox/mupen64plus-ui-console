@@ -71,6 +71,9 @@ endif
 OPTFLAGS ?= -O3 -flto
 WARNFLAGS ?= -Wall
 
+CFLAGS += -I/usr/include/python3.6m
+LDLIBS += -lpython3.6m
+
 CFLAGS += $(OPTFLAGS) $(WARNFLAGS) -ffast-math -fno-strict-aliasing -I../../src
 ifeq ($(OS), MINGW)
   CFLAGS += -lpthread
