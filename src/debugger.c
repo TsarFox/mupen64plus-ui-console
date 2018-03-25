@@ -241,7 +241,7 @@ static PyObject *_get_reg(PyObject *self, PyObject *args) {
 
     for (i = 0; i < 32; i++) {
         if (!strcmp(arg, register_names[i])) {
-            return PyLong_FromLongLong(regs[i]);
+            return PyLong_FromUnsignedLongLong((unsigned) regs[i]);
         }
     }
 
@@ -305,16 +305,14 @@ int debugger_loop(void *arg) {
         SDL_Delay(1);
     }
 
-    printf("Hooked!\n");
-
     PyImport_AppendInittab("llm64p", &PyInit_llm64p);
     Py_Initialize();
 
-    if ((fp = fopen("test.py", "r")) == NULL) {
+    if ((fp = fopen("mupen64debug/frontend.py", "r")) == NULL) {
         goto out;
     }
 
-    PyRun_SimpleFile(fp, "test.py");
+    PyRun_SimpleFile(fp, "mupen64debug/frontend.py");
     fclose(fp);
 
     SDL_Delay(5000);
